@@ -5,6 +5,7 @@
 #include "catalog/catalog_entry/node_table_catalog_entry.h"
 #include "common/exception/binder.h"
 #include "transaction/transaction_context.h"
+#include <format>
 
 namespace lbug {
 namespace fts_extension {
@@ -17,15 +18,15 @@ void FTSIndexUtils::validateIndexExistence(const main::ClientContext& context,
     case IndexOperation::CREATE: {
         if (catalog->containsIndex(transaction::Transaction::Get(context), tableEntry->getTableID(),
                 indexName)) {
-            throw common::BinderException{common::stringFormat(
-                "Index {} already exists in table {}.", indexName, tableEntry->getName())};
+            throw common::BinderException{std::format("Index {} already exists in table {}.",
+                indexName, tableEntry->getName())};
         }
     } break;
     case IndexOperation::DROP:
     case IndexOperation::QUERY: {
         if (!catalog->containsIndex(transaction::Transaction::Get(context),
                 tableEntry->getTableID(), indexName)) {
-            throw common::BinderException{common::stringFormat(
+            throw common::BinderException{std::format(
                 "Table {} doesn't have an index with name {}.", tableEntry->getName(), indexName)};
         }
     } break;
@@ -49,7 +50,7 @@ void FTSIndexUtils::validateAutoTransaction(const main::ClientContext& context,
     const std::string& funcName) {
     if (!transaction::TransactionContext::Get(context)->isAutoTransaction()) {
         throw common::BinderException{
-            common::stringFormat("{} is only supported in auto transaction mode.", funcName)};
+            std::format("{} is only supported in auto transaction mode.", funcName)};
     }
 }
 

@@ -10,6 +10,7 @@
 #include "expression_evaluator/expression_evaluator_utils.h"
 #include "function/scalar_function.h"
 #include "libstemmer.h"
+#include <format>
 
 namespace lbug {
 namespace fts_extension {
@@ -44,8 +45,8 @@ void Stem::operation(common::ku_string_t& word, common::ku_string_t& stemmer,
         sb_stemmer_new(reinterpret_cast<const char*>(stemmer.getData()), "UTF_8");
     if (sbStemmer == nullptr) {
         throw common::RuntimeException(
-            common::stringFormat("Unrecognized stemmer '{}'. Supported stemmers are: ['{}'], or "
-                                 "use 'none' for no stemming.",
+            std::format("Unrecognized stemmer '{}'. Supported stemmers are: ['{}'], or "
+                        "use 'none' for no stemming.",
                 stemmer.getAsString(), getStemmerList()));
     }
 
@@ -81,10 +82,10 @@ struct StemBindData final : public FunctionBindData {
         }
         sbStemmer = sb_stemmer_new(stemmer.c_str(), "UTF_8");
         if (sbStemmer == nullptr) {
-            throw common::RuntimeException(common::stringFormat(
-                "Unrecognized stemmer '{}'. Supported stemmers are: ['{}'], or "
-                "use 'none' for no stemming.",
-                stemmer, getStemmerList()));
+            throw common::RuntimeException(
+                std::format("Unrecognized stemmer '{}'. Supported stemmers are: ['{}'], or "
+                            "use 'none' for no stemming.",
+                    stemmer, getStemmerList()));
         }
     }
 
@@ -154,8 +155,8 @@ void StemFunction::validateStemmer(const std::string& stemmer) {
         sb_stemmer_new(reinterpret_cast<const char*>(stemmer.c_str()), "UTF_8");
     if (sbStemmer == nullptr) {
         throw common::BinderException(
-            common::stringFormat("Unrecognized stemmer '{}'. Supported stemmers are: ['{}'], or "
-                                 "use 'none' for no stemming.",
+            std::format("Unrecognized stemmer '{}'. Supported stemmers are: ['{}'], or "
+                        "use 'none' for no stemming.",
                 stemmer, getStemmerList()));
     }
     sb_stemmer_delete(sbStemmer);

@@ -8,6 +8,7 @@
 #include "processor/execution_context.h"
 #include "storage/storage_manager.h"
 #include "transaction/transaction_context.h"
+#include <format>
 
 using namespace lbug::function;
 
@@ -67,11 +68,11 @@ static std::string dropHNSWIndexTables(main::ClientContext& context,
         query += "BEGIN TRANSACTION;";
     }
     auto nodeTableID = dropHNSWIndexBindData->tableEntry->getTableID();
-    query += common::stringFormat("CALL _DROP_HNSW_INDEX('{}', '{}');",
+    query += std::format("CALL _DROP_HNSW_INDEX('{}', '{}');",
         dropHNSWIndexBindData->tableEntry->getName(), dropHNSWIndexBindData->indexName);
-    query += common::stringFormat("DROP TABLE {};",
+    query += std::format("DROP TABLE {};",
         HNSWIndexUtils::getUpperGraphTableName(nodeTableID, dropHNSWIndexBindData->indexName));
-    query += common::stringFormat("DROP TABLE {};",
+    query += std::format("DROP TABLE {};",
         HNSWIndexUtils::getLowerGraphTableName(nodeTableID, dropHNSWIndexBindData->indexName));
     if (requireNewTransaction) {
         query += "COMMIT;";

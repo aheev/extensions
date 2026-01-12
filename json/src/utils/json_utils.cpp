@@ -15,6 +15,7 @@
 #include "function/cast/functions/cast_string_non_nested_functions.h"
 #include "function/cast/functions/numeric_limits.h"
 #include "json_type.h"
+#include <format>
 
 using namespace lbug::common;
 
@@ -345,9 +346,8 @@ static void readFromJsonArr(yyjson_val* val, common::ValueVector& vec, uint64_t 
     case LogicalTypeID::LIST: {
         if (outputType.getLogicalTypeID() == LogicalTypeID::ARRAY) {
             if (yyjson_arr_size(val) != ArrayType::getNumElements(outputType)) {
-                throw RuntimeException(
-                    stringFormat("Expected type {} but list type has {} elements",
-                        outputType.toString(), yyjson_arr_size(val)));
+                throw RuntimeException(std::format("Expected type {} but list type has {} elements",
+                    outputType.toString(), yyjson_arr_size(val)));
             }
         }
         auto lst = ListVector::addList(&vec, yyjson_arr_size(val));
@@ -382,12 +382,12 @@ static void readFromJsonArr(yyjson_val* val, common::ValueVector& vec, uint64_t 
         // no type was found
         if (!foundType) {
             throw NotImplementedException(
-                stringFormat("Cannot read from JSON Array to {}", outputType.toString()));
+                std::format("Cannot read from JSON Array to {}", outputType.toString()));
         }
     } break;
     default:
         throw NotImplementedException(
-            stringFormat("Cannot read from JSON Array to {}", outputType.toString()));
+            std::format("Cannot read from JSON Array to {}", outputType.toString()));
     }
 }
 
@@ -448,12 +448,12 @@ static void readFromJsonObj(yyjson_val* val, common::ValueVector& vec, uint64_t 
         // no type was found
         if (!foundType) {
             throw NotImplementedException(
-                stringFormat("Cannot read from JSON Object to {}", outputType.toString()));
+                std::format("Cannot read from JSON Object to {}", outputType.toString()));
         }
     } break;
     default:
         throw NotImplementedException(
-            stringFormat("Cannot read from JSON Object to {}", outputType.toString()));
+            std::format("Cannot read from JSON Object to {}", outputType.toString()));
     }
 }
 
@@ -486,12 +486,12 @@ static void readFromJsonBool(bool val, common::ValueVector& vec, uint64_t pos) {
         // no type was found
         if (!foundType) {
             throw NotImplementedException(
-                stringFormat("Cannot read from JSON Bool to {}", outputType.toString()));
+                std::format("Cannot read from JSON Bool to {}", outputType.toString()));
         }
     } break;
     default:
         throw NotImplementedException(
-            stringFormat("Cannot read from JSON Bool to {}", outputType.toString()));
+            std::format("Cannot read from JSON Bool to {}", outputType.toString()));
     }
 }
 
@@ -577,12 +577,12 @@ static void readFromJsonNum(NUM_TYPE val, common::ValueVector& vec, uint64_t pos
         // no type was found
         if (!foundType) {
             throw NotImplementedException(
-                stringFormat("Cannot read from JSON Number to {}", outputType.toString()));
+                std::format("Cannot read from JSON Number to {}", outputType.toString()));
         }
     } break;
     default:
         throw NotImplementedException(
-            stringFormat("Cannot read from JSON Number to {}", outputType.toString()));
+            std::format("Cannot read from JSON Number to {}", outputType.toString()));
     }
 }
 
@@ -651,10 +651,10 @@ std::string jsonToString(const yyjson_val* val) {
 void invalidJsonError(const char* data, size_t size, yyjson_read_err* err) {
     size_t line = 0, col = 0, chr = 0;
     if (yyjson_locate_pos(data, size, err->pos, &line, &col, &chr)) {
-        throw RuntimeException(stringFormat("Error {} at line {}, column {}, character index {}",
+        throw RuntimeException(std::format("Error {} at line {}, column {}, character index {}",
             err->msg, line, col, chr));
     } else {
-        throw RuntimeException(stringFormat("Error {} at byte {}", err->msg, err->pos));
+        throw RuntimeException(std::format("Error {} at byte {}", err->msg, err->pos));
     }
 }
 

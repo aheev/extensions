@@ -1,5 +1,7 @@
 #include "function/azure_scan.h"
 
+#include <format>
+
 namespace lbug {
 namespace azure_extension {
 
@@ -12,7 +14,7 @@ static std::unique_ptr<TableFuncBindData> bindFunc(main::ClientContext* context,
     auto connector = std::make_shared<AzureConnector>();
     connector->connect("" /* inMemDB */, "" /* defaultCatalogName */, "" /* defaultSchemaName */,
         context);
-    std::string query = stringFormat("SELECT * FROM '{}'", input->getLiteralVal<std::string>(0));
+    std::string query = std::format("SELECT * FROM '{}'", input->getLiteralVal<std::string>(0));
     auto result = connector->executeQuery(query + " LIMIT 1");
     std::vector<LogicalType> returnTypes;
     std::vector<std::string> returnColumnNames = scanInput->expectedColumnNames;

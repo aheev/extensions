@@ -1,6 +1,7 @@
 #include "connector/unity_catalog_connector.h"
 
 #include "options/unity_catalog_options.h"
+#include <format>
 
 namespace lbug {
 namespace unity_catalog_extension {
@@ -16,8 +17,8 @@ void UnityCatalogConnector::connect(const std::string& dbPath, const std::string
     executeQuery("load delta;");
     executeQuery("install delta;");
     executeQuery(DuckDBUnityCatalogSecretManager::getSecret(context));
-    executeQuery(common::stringFormat("attach '{}' as {} (TYPE UC_CATALOG, read_only);", dbPath,
-        catalogName));
+    executeQuery(
+        std::format("attach '{}' as {} (TYPE UC_CATALOG, read_only);", dbPath, catalogName));
 }
 
 } // namespace unity_catalog_extension

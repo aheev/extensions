@@ -10,6 +10,7 @@
 #include "storage/buffer_manager/memory_manager.h"
 #include "storage/duckdb_storage.h"
 #include "storage/storage_manager.h"
+#include <format>
 
 namespace lbug {
 namespace duckdb_extension {
@@ -26,7 +27,7 @@ DuckDBCatalog::DuckDBCatalog(std::string dbPath, std::string catalogName,
     if (options.contains(DuckDBStorageExtension::SKIP_UNSUPPORTED_TABLE_KEY)) {
         auto val = options.at(DuckDBStorageExtension::SKIP_UNSUPPORTED_TABLE_KEY);
         if (val.getDataType().getLogicalTypeID() != common::LogicalTypeID::BOOL) {
-            throw common::RuntimeException{common::stringFormat("Invalid option value for {}",
+            throw common::RuntimeException{std::format("Invalid option value for {}",
                 DuckDBStorageExtension::SKIP_UNSUPPORTED_TABLE_KEY)};
         }
         skipUnsupportedTable = val.getValue<bool>();
@@ -34,7 +35,7 @@ DuckDBCatalog::DuckDBCatalog(std::string dbPath, std::string catalogName,
 }
 
 void DuckDBCatalog::init() {
-    auto query = common::stringFormat(
+    auto query = std::format(
         "select table_name from information_schema.tables where table_catalog = '{}' and "
         "table_schema = '{}' order by table_name;",
         catalogName, defaultSchemaName);
@@ -63,8 +64,8 @@ std::string DuckDBCatalog::bindSchemaName(const binder::AttachOption& options,
     if (options.options.contains(DuckDBStorageExtension::SCHEMA_OPTION)) {
         auto val = options.options.at(DuckDBStorageExtension::SCHEMA_OPTION);
         if (val.getDataType().getLogicalTypeID() != common::LogicalTypeID::STRING) {
-            throw common::RuntimeException{common::stringFormat("Invalid option value for {}",
-                DuckDBStorageExtension::SCHEMA_OPTION)};
+            throw common::RuntimeException{
+                std::format("Invalid option value for {}", DuckDBStorageExtension::SCHEMA_OPTION)};
         }
         return val.getValue<std::string>();
     }
@@ -73,7 +74,7 @@ std::string DuckDBCatalog::bindSchemaName(const binder::AttachOption& options,
 
 static std::string getQuery(const binder::BoundCreateTableInfo& info) {
     auto extraInfo = info.extraInfo->constPtrCast<BoundExtraCreateDuckDBTableInfo>();
-    return "SELECT {} " + common::stringFormat("FROM \"{}\".{}.{}", extraInfo->catalogName,
+    return "SELECT {} " + std::format("FROM \"{}\".{}.{}", extraInfo->catalogName,
                               extraInfo->schemaName, info.tableName);
 }
 
@@ -104,7 +105,7 @@ void DuckDBCatalog::createForeignTable(const std::string& tableName) {
 
     // Create DuckDB scan function for SQL pushdown
     auto scanFunction = getScanFunction(duckdbTableInfo);
-    auto foreignDatabaseName = common::stringFormat("{}.{}", catalogName, tableName);
+    auto foreignDatabaseName = std::format("{}.{}", catalogName, tableName);
     auto mainTableEntry = std::make_unique<catalog::NodeTableCatalogEntry>(info->tableName,
         primaryKeyName, foreignDatabaseName, catalog::ShadowTag{});
     for (auto& definition : extraInfo->propertyDefinitions) {
@@ -121,10 +122,9 @@ static bool getTableInfo(const DuckDBConnector& connector, const std::string& ta
     const std::string& schemaName, const std::string& catalogName,
     std::vector<common::LogicalType>& columnTypes, std::vector<std::string>& columnNames,
     bool skipUnsupportedTable) {
-    auto query =
-        common::stringFormat("select data_type,column_name from information_schema.columns where "
+    auto query = std::format("select data_type,column_name from information_schema.columns where "
                              "table_name = '{}' and table_schema = '{}' and table_catalog = '{}';",
-            tableName, schemaName, catalogName);
+        tableName, schemaName, catalogName);
     auto result = connector.executeQuery(query);
     if (result->RowCount() == 0) {
         return false;

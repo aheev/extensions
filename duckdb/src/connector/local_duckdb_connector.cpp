@@ -3,6 +3,7 @@
 #include "common/exception/runtime.h"
 #include "common/file_system/virtual_file_system.h"
 #include "main/client_context.h"
+#include <format>
 
 namespace lbug {
 namespace duckdb_extension {
@@ -11,7 +12,7 @@ void LocalDuckDBConnector::connect(const std::string& dbPath, const std::string&
     const std::string& /*schemaName*/, main::ClientContext* context) {
     if (!common::VirtualFileSystem::GetUnsafe(*context)->fileOrPathExists(dbPath, context)) {
         throw common::RuntimeException{
-            common::stringFormat("Given duckdb database path {} does not exist.", dbPath)};
+            std::format("Given duckdb database path {} does not exist.", dbPath)};
     }
     duckdb::DBConfig dbConfig{true /* isReadOnly */};
     instance = std::make_unique<duckdb::DuckDB>(dbPath, &dbConfig);

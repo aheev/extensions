@@ -14,6 +14,7 @@
 #include "providers/open-ai.h"
 #include "providers/provider.h"
 #include "providers/voyage-ai.h"
+#include <format>
 
 using namespace lbug::common;
 using namespace lbug::binder;
@@ -106,9 +107,8 @@ static void execFunc(const std::vector<std::shared_ptr<common::ValueVector>>& pa
 
 void validateValAsPositive(int64_t val) {
     if (val <= 0) {
-        throw(BinderException(
-            common::stringFormat("Dimensions should be greater than 0. Got: {}.\n{}", val,
-                std::string(EmbeddingProvider::referenceLbugDocs))));
+        throw(BinderException(std::format("Dimensions should be greater than 0. Got: {}.\n{}", val,
+            std::string(EmbeddingProvider::referenceLbugDocs))));
     }
 }
 

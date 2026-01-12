@@ -3,6 +3,7 @@
 #include "connector/duckdb_secret_manager.h"
 #include "main/client_context.h"
 #include "s3fs_config.h"
+#include <format>
 
 namespace lbug {
 namespace duckdb_extension {
@@ -14,7 +15,7 @@ void HTTPDuckDBConnector::connect(const std::string& dbPath, const std::string& 
     connection = std::make_unique<duckdb::Connection>(*instance);
     executeQuery("install httpfs;");
     executeQuery("load httpfs;");
-    executeQuery(common::stringFormat("attach '{}' as {} (read_only);", dbPath, catalogName));
+    executeQuery(std::format("attach '{}' as {} (read_only);", dbPath, catalogName));
 }
 
 void S3DuckDBConnector::connect(const std::string& dbPath, const std::string& catalogName,
@@ -25,7 +26,7 @@ void S3DuckDBConnector::connect(const std::string& dbPath, const std::string& ca
     executeQuery("install httpfs;");
     executeQuery("load httpfs;");
     initRemoteFSSecrets(context);
-    executeQuery(common::stringFormat("attach '{}' as {} (read_only);", dbPath, catalogName));
+    executeQuery(std::format("attach '{}' as {} (read_only);", dbPath, catalogName));
 }
 
 } // namespace duckdb_extension

@@ -3,6 +3,7 @@
 #include "extension/extension.h"
 #include "function/sqlite_scan.h"
 #include "main/client_context.h"
+#include <format>
 
 namespace lbug {
 namespace sqlite_extension {
@@ -16,8 +17,7 @@ void SqliteConnector::connect(const std::string& dbPath, const std::string& cata
     connection = std::make_unique<duckdb::Connection>(*instance);
     executeQuery("install sqlite;");
     executeQuery("load sqlite;");
-    executeQuery(
-        common::stringFormat("attach '{}' as {} (TYPE sqlite, read_only)", dbPath, catalogName));
+    executeQuery(std::format("attach '{}' as {} (TYPE sqlite, read_only)", dbPath, catalogName));
 }
 
 std::shared_ptr<duckdb_extension::DuckDBTableScanInfo> SqliteConnector::getTableScanInfo(

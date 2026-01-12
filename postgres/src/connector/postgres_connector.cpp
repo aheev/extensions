@@ -1,5 +1,7 @@
 #include "connector/postgres_connector.h"
 
+#include <format>
+
 namespace lbug {
 namespace postgres_extension {
 
@@ -10,8 +12,8 @@ void PostgresConnector::connect(const std::string& dbPath, const std::string& ca
     connection = std::make_unique<duckdb::Connection>(*instance);
     executeQuery("install postgres;");
     executeQuery("load postgres;");
-    executeQuery(common::stringFormat("attach '{}' as {} (TYPE postgres, SCHEMA {}, read_only);",
-        dbPath, catalogName, schemaName));
+    executeQuery(std::format("attach '{}' as {} (TYPE postgres, SCHEMA {}, read_only);", dbPath,
+        catalogName, schemaName));
 }
 
 } // namespace postgres_extension
