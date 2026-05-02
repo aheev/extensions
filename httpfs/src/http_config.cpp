@@ -1,7 +1,8 @@
 #include "http_config.h"
 
+#include "common/exception/exception.h"
+#include "common/types/value/value.h"
 #include "function/cast/functions/cast_from_string_functions.h"
-#include "main/db_config.h"
 
 namespace lbug {
 namespace httpfs_extension {
@@ -18,13 +19,13 @@ void HTTPConfigEnvProvider::setOptionValue(main::ClientContext* context) {
     if (cacheFileOptionStrVal != "") {
         bool enableCacheFile = false;
         function::CastString::operation(
-            string_t{cacheFileOptionStrVal.c_str(), cacheFileOptionStrVal.length()},
+            common::string_t{cacheFileOptionStrVal.c_str(), cacheFileOptionStrVal.length()},
             enableCacheFile);
         if (enableCacheFile && context->isInMemory()) {
-            throw Exception("Cannot enable HTTP file cache when database is in memory");
+            throw common::Exception("Cannot enable HTTP file cache when database is in memory");
         }
         context->setExtensionOption(HTTPCacheFileConfig::HTTP_CACHE_FILE_OPTION,
-            Value::createValue(enableCacheFile));
+            common::Value::createValue(enableCacheFile));
     }
 }
 
