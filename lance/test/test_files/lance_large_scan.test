@@ -1,0 +1,33 @@
+-DATASET LANCE lance-large-test
+--
+
+-CASE LanceLargeNodeScan
+
+-LOG CountBeyondOneVector
+-STATEMENT MATCH (n:nodes) RETURN count(n);
+---- 1
+3000
+
+-LOG SkipPastFirstVector
+-STATEMENT MATCH (n:nodes) RETURN n.id SKIP 2048 LIMIT 10;
+---- 10
+2048
+2049
+2050
+2051
+2052
+2053
+2054
+2055
+2056
+2057
+
+-LOG SumAllValues
+-STATEMENT MATCH (n:nodes) RETURN sum(n.val);
+---- 1
+4498500
+
+-LOG FilterAndCount
+-STATEMENT MATCH (n:nodes) WHERE n.id >= 2900 RETURN count(n);
+---- 1
+100

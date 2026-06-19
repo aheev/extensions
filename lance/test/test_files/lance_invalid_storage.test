@@ -1,0 +1,37 @@
+-DATASET CSV empty
+--
+
+-CASE LanceNonExistentDirNodeFails
+
+-LOG LanceNonExistentDirMissingDataset
+-STATEMENT LOAD EXTENSION 'lance';
+---- ok
+-STATEMENT CREATE NODE TABLE t(id INT64 PRIMARY KEY) WITH (storage = '/nonexistent/dir/that/does/not/exist/t.lance', format = 'lance')
+---- ok
+-STATEMENT MATCH (n:t) RETURN *
+---- error(regex)
+.*[Nn]o such file.*|.*[Cc]annot open.*|.*[Nn]ot found.*|.*[Ll]ance.*
+
+-CASE LanceRemoteURINodeFails
+
+-LOG LanceRemoteURIMissingDataset
+-STATEMENT LOAD EXTENSION 'lance';
+---- ok
+-STATEMENT CREATE NODE TABLE t2(id INT64 PRIMARY KEY) WITH (storage = 'https://example.com/path/t2.lance', format = 'lance')
+---- ok
+-STATEMENT MATCH (n:t2) RETURN *
+---- error(regex)
+.*[Nn]o such file.*|.*[Cc]annot open.*|.*[Nn]ot found.*|.*[Ll]ance.*|.*[Uu]nsupported.*
+
+-CASE LanceMixWithRegularFails
+
+-LOG LanceMixRelWithRegularNode
+-STATEMENT LOAD EXTENSION 'lance';
+---- ok
+-STATEMENT CREATE NODE TABLE person2(id INT64 PRIMARY KEY, name STRING)
+---- ok
+-STATEMENT CREATE NODE TABLE person3(id INT64 PRIMARY KEY) WITH (storage = '${LBUG_ROOT_DIRECTORY}/dataset/lance-test/user.lance', format = 'lance')
+---- ok
+-STATEMENT CREATE REL TABLE rel2(FROM person2 TO person3)
+---- error(regex)
+.*[Cc]annot mix.*[Ll]ance.*|.*[Ll]ance.*[Cc]annot mix.*
