@@ -12,7 +12,7 @@ Attached database successfully.
 ---- ok
 -STATEMENT COPY person_copy FROM tinysnb.person;
 ---- 1
-8 tuples have been copied to the person_copy table.
+8 tuples have been copied to the person_copy table.|0|[]
 -STATEMENT MATCH (p:person_copy) RETURN p.*
 ---- 8
 0|Alice|1|1|0|35|5.000000|1900-01-01|2011-08-20 11:25:30|3 years 2 days 13:02:00|[10, 5]|[Aida]|[[10, 8], [6, 7, 8]]|1.731000|a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11|[96, 54, 86, 92]
