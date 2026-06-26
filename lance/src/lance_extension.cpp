@@ -18,26 +18,23 @@ void LanceExtension::load(main::ClientContext* context) {
     auto* storageManager = storage::StorageManager::Get(*context);
 
     // ── Register table factories ────────────────────────────────────────────
-    storage::NodeTableFactory nodeFactory = [](const storage::StorageManager* sm,
-                                                const catalog::NodeTableCatalogEntry* entry,
-                                                storage::MemoryManager* mm,
-                                                main::ClientContext* ctx)
-                                                -> std::unique_ptr<storage::Table> {
+    storage::NodeTableFactory nodeFactory =
+        [](const storage::StorageManager* sm, const catalog::NodeTableCatalogEntry* entry,
+            storage::MemoryManager* mm,
+            main::ClientContext* ctx) -> std::unique_ptr<storage::Table> {
         return std::make_unique<LanceNodeTable>(sm, entry, mm, ctx);
     };
 
-    storage::RelTableFactory relFactory = [](catalog::RelGroupCatalogEntry* entry,
-                                              common::table_id_t fromTableID,
-                                              common::table_id_t toTableID,
-                                              const storage::StorageManager* sm,
-                                              storage::MemoryManager* mm,
-                                              main::ClientContext* ctx)
-                                              -> std::unique_ptr<storage::Table> {
+    storage::RelTableFactory relFactory =
+        [](catalog::RelGroupCatalogEntry* entry, common::table_id_t fromTableID,
+            common::table_id_t toTableID, const storage::StorageManager* sm,
+            storage::MemoryManager* mm,
+            main::ClientContext* ctx) -> std::unique_ptr<storage::Table> {
         return std::make_unique<LanceRelTable>(entry, fromTableID, toTableID, sm, mm, ctx);
     };
 
-    storageManager->registerStorageFormatHandler(
-        common::StorageFormat::LANCE, std::move(nodeFactory), std::move(relFactory));
+    storageManager->registerStorageFormatHandler(common::StorageFormat::LANCE,
+        std::move(nodeFactory), std::move(relFactory));
 
     // ── Register search functions ───────────────────────────────────────────
     ExtensionUtils::addTableFunc<LanceVectorSearchFunction>(db);

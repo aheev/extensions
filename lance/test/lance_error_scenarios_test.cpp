@@ -27,9 +27,8 @@ protected:
 
 TEST_F(LanceErrorScenariosTest, ExtensionNotLoadedGivesActionableError) {
     // If lance extension is not loaded, CREATE TABLE format='lance' should give a clear error
-    auto result = conn->query(
-        "CREATE NODE TABLE LanceNode (id INT64 PRIMARY KEY) "
-        "storage='/tmp/some.lance' format='lance'");
+    auto result = conn->query("CREATE NODE TABLE LanceNode (id INT64 PRIMARY KEY) "
+                              "storage='/tmp/some.lance' format='lance'");
     // Either extension is loaded (success) or gives actionable error, never a cryptic crash
     if (!result->isSuccess()) {
         auto errMsg = result->getErrorMessage();
@@ -46,19 +45,18 @@ TEST_F(LanceErrorScenariosTest, MissingFileHandledGracefully) {
 #if defined(BUILD_DYNAMIC_LOAD)
     auto extPath = TestHelper::appendLbugRootPath("extension/lance/build/liblance.lbug_extension");
     auto loadResult = conn->query("LOAD EXTENSION '" + extPath + "'");
-    if (!loadResult->isSuccess()) GTEST_SKIP() << "Lance extension not available";
+    if (!loadResult->isSuccess())
+        GTEST_SKIP() << "Lance extension not available";
 #endif
 
-    auto result = conn->query(
-        "CREATE NODE TABLE Ghost (id INT64 PRIMARY KEY) "
-        "storage='/nonexistent/path.lance' format='lance'");
+    auto result = conn->query("CREATE NODE TABLE Ghost (id INT64 PRIMARY KEY) "
+                              "storage='/nonexistent/path.lance' format='lance'");
     ASSERT_FALSE(result->isSuccess());
     ASSERT_NE(result->getErrorMessage().find("lance"), std::string::npos);
 }
 
 TEST_F(LanceErrorScenariosTest, InvalidFormatParameterRejected) {
-    auto result = conn->query(
-        "CREATE NODE TABLE Bad (id INT64 PRIMARY KEY) format='lanceXXX'");
+    auto result = conn->query("CREATE NODE TABLE Bad (id INT64 PRIMARY KEY) format='lanceXXX'");
     ASSERT_FALSE(result->isSuccess());
     auto errMsg = result->getErrorMessage();
     ASSERT_TRUE(errMsg.find("lanceXXX") != std::string::npos ||
@@ -72,7 +70,8 @@ TEST_F(LanceErrorScenariosTest, DuplicateLoadIsIdempotent) {
 #if defined(BUILD_DYNAMIC_LOAD)
     auto extPath = TestHelper::appendLbugRootPath("extension/lance/build/liblance.lbug_extension");
     auto r1 = conn->query("LOAD EXTENSION '" + extPath + "'");
-    if (!r1->isSuccess()) GTEST_SKIP() << "Lance extension not available";
+    if (!r1->isSuccess())
+        GTEST_SKIP() << "Lance extension not available";
     // Duplicate load must not fail
     auto r2 = conn->query("LOAD EXTENSION '" + extPath + "'");
     ASSERT_TRUE(r2->isSuccess()) << r2->getErrorMessage();

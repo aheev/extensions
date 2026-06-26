@@ -15,10 +15,9 @@
 #include "function/table/bind_data.h"
 #include "function/table/bind_input.h"
 #include "function/table/table_function.h"
+#include "lance/lance.hpp"
 #include "main/client_context.h"
 #include "processor/execution_context.h"
-
-#include "lance/lance.hpp"
 
 namespace lbug {
 namespace lance_extension {
@@ -37,8 +36,7 @@ struct LanceVectorSearchBindData : TableFuncBindData {
     uint32_t nprobes;
 
     LanceVectorSearchBindData(std::string path, std::string col, std::vector<float> query,
-        uint32_t k, std::string metric, uint32_t nprobes,
-        binder::expression_vector columns)
+        uint32_t k, std::string metric, uint32_t nprobes, binder::expression_vector columns)
         : TableFuncBindData{std::move(columns)}, datasetPath{std::move(path)},
           columnName{std::move(col)}, queryVector{std::move(query)}, k{k},
           metric{std::move(metric)}, nprobes{nprobes} {}
@@ -57,7 +55,8 @@ struct LanceSearchSharedState : TableFuncSharedState {
     LanceSearchSharedState() { std::memset(&stream, 0, sizeof(stream)); }
 
     ~LanceSearchSharedState() override {
-        if (stream.release) stream.release(&stream);
+        if (stream.release)
+            stream.release(&stream);
     }
 };
 
@@ -78,9 +77,8 @@ static std::unique_ptr<TableFuncBindData> bindVectorSearch(main::ClientContext* 
     }
     auto k = static_cast<uint32_t>(input->getLiteralVal<int64_t>(3));
     std::string metric = (input->params.size() > 4) ? input->getLiteralVal<std::string>(4) : "l2";
-    uint32_t nprobes = (input->params.size() > 5)
-                           ? static_cast<uint32_t>(input->getLiteralVal<int64_t>(5))
-                           : 1;
+    uint32_t nprobes =
+        (input->params.size() > 5) ? static_cast<uint32_t>(input->getLiteralVal<int64_t>(5)) : 1;
 
     // Open dataset to discover schema
     auto resolvedPath = VirtualFileSystem::resolvePath(context, datasetPath);
@@ -93,7 +91,8 @@ static std::unique_ptr<TableFuncBindData> bindVectorSearch(main::ClientContext* 
         std::vector<LogicalType> returnTypes;
         std::vector<std::string> returnNames;
         for (int32_t i = 0; i < schema.n_children; ++i) {
-            if (!schema.children[i] || !schema.children[i]->name) continue;
+            if (!schema.children[i] || !schema.children[i]->name)
+                continue;
             returnNames.push_back(schema.children[i]->name);
             returnTypes.push_back(ArrowConverter::fromArrowSchema(schema.children[i]));
         }
@@ -101,7 +100,8 @@ static std::unique_ptr<TableFuncBindData> bindVectorSearch(main::ClientContext* 
         returnNames.push_back("_distance");
         returnTypes.push_back(LogicalType{LogicalTypeID::FLOAT});
 
-        if (schema.release) schema.release(&schema);
+        if (schema.release)
+            schema.release(&schema);
 
         auto columns = input->binder->createVariables(returnNames, returnTypes);
         return std::make_unique<LanceVectorSearchBindData>(std::move(resolvedPath),
@@ -122,11 +122,14 @@ static std::shared_ptr<TableFuncSharedState> initVectorSearchSharedState(
         auto scanner = dataset.scan();
 
         LanceMetricType metric = LANCE_METRIC_L2;
-        if (bindData->metric == "cosine") metric = LANCE_METRIC_COSINE;
-        else if (bindData->metric == "dot")   metric = LANCE_METRIC_DOT;
+        if (bindData->metric == "cosine")
+            metric = LANCE_METRIC_COSINE;
+        else if (bindData->metric == "dot")
+            metric = LANCE_METRIC_DOT;
 
-        scanner.nearest(bindData->columnName, bindData->queryVector.data(),
-                        bindData->queryVector.size(), bindData->k)
+        scanner
+            .nearest(bindData->columnName, bindData->queryVector.data(),
+                bindData->queryVector.size(), bindData->k)
             .nprobes(bindData->nprobes)
             .metric(metric);
 
@@ -140,7 +143,8 @@ static std::shared_ptr<TableFuncSharedState> initVectorSearchSharedState(
 
 static offset_t vectorSearchTableFunc(const TableFuncInput& input, TableFuncOutput& output) {
     auto* sharedState = input.sharedState->ptrCast<LanceSearchSharedState>();
-    if (sharedState->exhausted) return 0;
+    if (sharedState->exhausted)
+        return 0;
 
     ArrowArray batch;
     std::memset(&batch, 0, sizeof(batch));
@@ -160,19 +164,23 @@ static offset_t vectorSearchTableFunc(const TableFuncInput& input, TableFuncOutp
 
     // Copy each column from the batch to the output data chunk
     for (uint64_t col = 0; col < static_cast<uint64_t>(output.dataChunk.getNumValueVectors()) &&
-                            col < static_cast<uint64_t>(batch.n_children) &&
-                            col < static_cast<uint64_t>(schema.n_children);
+                           col < static_cast<uint64_t>(batch.n_children) &&
+                           col < static_cast<uint64_t>(schema.n_children);
          ++col) {
         auto* childArr = batch.children[col];
         auto* childSchema = schema.children[col];
-        if (!childArr || !childSchema) continue;
+        if (!childArr || !childSchema)
+            continue;
         ArrowNullMaskTree nullMask(childSchema, childArr, childArr->offset, childArr->length);
-        ArrowConverter::fromArrowArray(childSchema, childArr, output.dataChunk.getValueVectorMutable(col),
-            &nullMask, static_cast<uint64_t>(childArr->offset), 0, batchLen);
+        ArrowConverter::fromArrowArray(childSchema, childArr,
+            output.dataChunk.getValueVectorMutable(col), &nullMask,
+            static_cast<uint64_t>(childArr->offset), 0, batchLen);
     }
 
-    if (schema.release) schema.release(&schema);
-    if (batch.release) batch.release(&batch);
+    if (schema.release)
+        schema.release(&schema);
+    if (batch.release)
+        batch.release(&batch);
     output.dataChunk.state->getSelVectorUnsafe().setSelSize(batchLen);
     return batchLen;
 }
@@ -221,9 +229,8 @@ static std::unique_ptr<TableFuncBindData> bindFTS(main::ClientContext* context,
     if (input->params.size() > 2) {
         searchCols.push_back(input->getLiteralVal<std::string>(2));
     }
-    uint32_t maxFuzzy = (input->params.size() > 3)
-                            ? static_cast<uint32_t>(input->getLiteralVal<int64_t>(3))
-                            : 0;
+    uint32_t maxFuzzy =
+        (input->params.size() > 3) ? static_cast<uint32_t>(input->getLiteralVal<int64_t>(3)) : 0;
 
     auto resolvedPath = VirtualFileSystem::resolvePath(context, datasetPath);
     try {
@@ -235,14 +242,16 @@ static std::unique_ptr<TableFuncBindData> bindFTS(main::ClientContext* context,
         std::vector<LogicalType> returnTypes;
         std::vector<std::string> returnNames;
         for (int32_t i = 0; i < schema.n_children; ++i) {
-            if (!schema.children[i] || !schema.children[i]->name) continue;
+            if (!schema.children[i] || !schema.children[i]->name)
+                continue;
             returnNames.push_back(schema.children[i]->name);
             returnTypes.push_back(ArrowConverter::fromArrowSchema(schema.children[i]));
         }
         returnNames.push_back("_score");
         returnTypes.push_back(LogicalType{LogicalTypeID::FLOAT});
 
-        if (schema.release) schema.release(&schema);
+        if (schema.release)
+            schema.release(&schema);
         auto columns = input->binder->createVariables(returnNames, returnTypes);
         return std::make_unique<LanceFTSBindData>(std::move(resolvedPath), std::move(query),
             std::move(searchCols), maxFuzzy, std::move(columns));
@@ -268,8 +277,8 @@ static std::shared_ptr<TableFuncSharedState> initFTSSharedState(
 
 function_set LanceFTSFunction::getFunctionSet() {
     function_set functionSet;
-    auto func = std::make_unique<TableFunction>(
-        name, std::vector<LogicalTypeID>{LogicalTypeID::STRING, LogicalTypeID::STRING});
+    auto func = std::make_unique<TableFunction>(name,
+        std::vector<LogicalTypeID>{LogicalTypeID::STRING, LogicalTypeID::STRING});
     func->bindFunc = bindFTS;
     func->initSharedStateFunc = initFTSSharedState;
     func->initLocalStateFunc = TableFunction::initEmptyLocalState;
@@ -303,8 +312,8 @@ struct LanceHybridSearchBindData : TableFuncBindData {
 static std::unique_ptr<TableFuncBindData> bindHybridSearch(main::ClientContext* context,
     const TableFuncBindInput* input) {
     if (input->params.size() < 5) {
-        throw RuntimeException(
-            "LANCE_HYBRID_SEARCH requires 5 arguments: dataset_path, column, query_vector, k, fts_query");
+        throw RuntimeException("LANCE_HYBRID_SEARCH requires 5 arguments: dataset_path, column, "
+                               "query_vector, k, fts_query");
     }
     auto datasetPath = input->getLiteralVal<std::string>(0);
     auto columnName = input->getLiteralVal<std::string>(1);
@@ -327,18 +336,19 @@ static std::unique_ptr<TableFuncBindData> bindHybridSearch(main::ClientContext* 
         std::vector<LogicalType> returnTypes;
         std::vector<std::string> returnNames;
         for (int32_t i = 0; i < schema.n_children; ++i) {
-            if (!schema.children[i] || !schema.children[i]->name) continue;
+            if (!schema.children[i] || !schema.children[i]->name)
+                continue;
             returnNames.push_back(schema.children[i]->name);
             returnTypes.push_back(ArrowConverter::fromArrowSchema(schema.children[i]));
         }
         returnNames.push_back("_score");
         returnTypes.push_back(LogicalType{LogicalTypeID::FLOAT});
 
-        if (schema.release) schema.release(&schema);
+        if (schema.release)
+            schema.release(&schema);
         auto columns = input->binder->createVariables(returnNames, returnTypes);
         return std::make_unique<LanceHybridSearchBindData>(std::move(resolvedPath),
-            std::move(columnName), std::move(queryVec), k, std::move(ftsQuery),
-            std::move(columns));
+            std::move(columnName), std::move(queryVec), k, std::move(ftsQuery), std::move(columns));
     } catch (const lance::Error& e) {
         throw RuntimeException(std::string("LANCE_HYBRID_SEARCH bind failed: ") + e.what());
     }

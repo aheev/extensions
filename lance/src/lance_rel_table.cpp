@@ -11,12 +11,11 @@
 #include "common/system_config.h"
 #include "common/types/internal_id_util.h"
 #include "common/types/types.h"
+#include "lance/lance.hpp"
+#include "lance_node_table.h"
 #include "main/client_context.h"
 #include "storage/storage_manager.h"
 #include "transaction/transaction.h"
-
-#include "lance/lance.hpp"
-#include "lance_node_table.h"
 
 namespace lbug {
 namespace lance_extension {
@@ -25,19 +24,103 @@ using namespace common;
 using namespace storage;
 using namespace transaction;
 
-// ─── LanceRelTableScanState ──────────────────────────────────────────────────
-
-LanceRelTableScanState::LanceRelTableScanState(MemoryManager& mm,
-    common::ValueVector* nodeIDVector, std::vector<common::ValueVector*> outputVectors,
-    std::shared_ptr<common::DataChunkState> outChunkState)
-    : RelTableScanState{mm, nodeIDVector, std::move(outputVectors), std::move(outChunkState)} {
-    std::memset(&stream, 0, sizeof(stream));
-    std::memset(&streamSchema, 0, sizeof(streamSchema));
+static std::string sanitizeLanceError(std::string message) {
+    for (char& ch : message) {
+        if (ch == '\n' || ch == '\r') {
+            ch = ' ';
+        }
+    }
+    return message;
 }
 
-LanceRelTableScanState::~LanceRelTableScanState() {
-    if (stream.release) stream.release(&stream);
-    if (streamSchema.release) streamSchema.release(&streamSchema);
+static uint64_t readOffset(const ArrowArray* arr, uint64_t localIdx);
+
+// ─── LanceRelTableScanState ──────────────────────────────────────────────────
+
+LanceRelTableScanState::LanceRelTableScanState(MemoryManager& mm, common::ValueVector* nodeIDVector,
+    std::vector<common::ValueVector*> outputVectors,
+    std::shared_ptr<common::DataChunkState> outChunkState)
+    : RelTableScanState{mm, nodeIDVector, std::move(outputVectors), std::move(outChunkState)} {}
+
+LanceRelTableScanState::~LanceRelTableScanState() = default;
+
+void LanceRelTable::ensureDatasetLoaded() const {
+    std::lock_guard lock(metadataMtx);
+    if (edgeCacheLoaded && cachedTotalRows != common::INVALID_ROW_IDX) {
+        return;
+    }
+
+    try {
+        std::vector<std::pair<common::offset_t, common::offset_t>> loadedEdges;
+        auto dataset = lance::Dataset::open(datasetPath);
+
+        ArrowSchema schema;
+        std::memset(&schema, 0, sizeof(schema));
+        dataset.schema(&schema);
+
+        auto resolvedFromColumnIdx = fromColumnIdx;
+        auto resolvedToColumnIdx = toColumnIdx;
+        for (int32_t i = 0; i < schema.n_children; ++i) {
+            if (!schema.children[i] || !schema.children[i]->name)
+                continue;
+            std::string colName = schema.children[i]->name;
+            if (colName == "from" || colName == "_from")
+                resolvedFromColumnIdx = i;
+            else if (colName == "to" || colName == "_to")
+                resolvedToColumnIdx = i;
+        }
+
+        if (schema.release)
+            schema.release(&schema);
+
+        if (resolvedFromColumnIdx < 0 || resolvedToColumnIdx < 0) {
+            throw common::RuntimeException("Lance rel table dataset '" + datasetPath +
+                                           "' must contain 'from' and 'to' columns. "
+                                           "Found fromColumnIdx=" +
+                                           std::to_string(resolvedFromColumnIdx) +
+                                           " toColumnIdx=" + std::to_string(resolvedToColumnIdx));
+        }
+
+        fromColumnIdx = resolvedFromColumnIdx;
+        toColumnIdx = resolvedToColumnIdx;
+
+        auto scanner = dataset.scan();
+        scanner.batch_size(4096);
+        ArrowArrayStream stream;
+        std::memset(&stream, 0, sizeof(stream));
+        scanner.to_arrow_stream(&stream);
+
+        ArrowArray batch;
+        std::memset(&batch, 0, sizeof(batch));
+        while (stream.get_next(&stream, &batch) == 0 && batch.release != nullptr) {
+            const auto batchLen = static_cast<uint64_t>(batch.length);
+            if (batch.children &&
+                static_cast<uint64_t>(resolvedFromColumnIdx) <
+                    static_cast<uint64_t>(batch.n_children) &&
+                static_cast<uint64_t>(resolvedToColumnIdx) <
+                    static_cast<uint64_t>(batch.n_children) &&
+                batch.children[resolvedFromColumnIdx] && batch.children[resolvedToColumnIdx]) {
+                auto* fromArr = batch.children[resolvedFromColumnIdx];
+                auto* toArr = batch.children[resolvedToColumnIdx];
+                for (uint64_t rowIdx = 0; rowIdx < batchLen; ++rowIdx) {
+                    loadedEdges.emplace_back(readOffset(fromArr, rowIdx),
+                        readOffset(toArr, rowIdx));
+                }
+            }
+            if (batch.release)
+                batch.release(&batch);
+            std::memset(&batch, 0, sizeof(batch));
+        }
+        if (stream.release)
+            stream.release(&stream);
+
+        edgeCache = std::move(loadedEdges);
+        edgeCacheLoaded = true;
+        cachedTotalRows = static_cast<uint64_t>(edgeCache.size());
+    } catch (const lance::Error& e) {
+        throw common::RuntimeException(std::string("Failed to open lance rel dataset '") +
+                                       datasetPath + "': " + sanitizeLanceError(e.what()));
+    }
 }
 
 void LanceRelTableScanState::setToTable(const Transaction* transaction, Table* table_,
@@ -61,22 +144,6 @@ void LanceRelTableScanState::setToTable(const Transaction* transaction, Table* t
     nodeGroupIdx = INVALID_NODE_GROUP_IDX;
 }
 
-void LanceRelTableScanState::reset(
-    std::unordered_map<common::offset_t, common::sel_t> boundNodeOffsets_) {
-    cachedBatchData = nullptr;
-    currentBatchStartOffset = 0;
-    currentLocalRowIdx = 0;
-    boundNodeOffsets = std::move(boundNodeOffsets_);
-    // Re-open stream from the rel table
-    streamExhausted = false;
-    streamInitialized = false;
-    schemaFetched = false;
-    if (stream.release) stream.release(&stream);
-    std::memset(&stream, 0, sizeof(stream));
-    if (streamSchema.release) streamSchema.release(&streamSchema);
-    std::memset(&streamSchema, 0, sizeof(streamSchema));
-}
-
 // ─── LanceRelTable ───────────────────────────────────────────────────────────
 
 LanceRelTable::LanceRelTable(catalog::RelGroupCatalogEntry* relGroupEntry,
@@ -86,256 +153,144 @@ LanceRelTable::LanceRelTable(catalog::RelGroupCatalogEntry* relGroupEntry,
     : ColumnarRelTableBase{relGroupEntry, fromTableID, toTableID, storageManager, memoryManager} {
     const auto& storage = relGroupEntry->getStorage();
     if (storage.empty()) {
-        throw common::RuntimeException(
-            "Lance rel table has empty storage path. "
-            "Specify the dataset path via storage='path/to/rel.lance'.");
+        throw common::RuntimeException("Lance rel table has empty storage path. "
+                                       "Specify the dataset path via storage='path/to/rel.lance'.");
     }
 
     datasetPath = common::VirtualFileSystem::resolvePath(context, storage);
+}
 
-    try {
-        auto dataset = lance::Dataset::open(datasetPath);
-        cachedTotalRows = dataset.count_rows();
-
-        // Discover 'from' and 'to' column indices in the lance schema
-        ArrowSchema schema;
-        std::memset(&schema, 0, sizeof(schema));
-        dataset.schema(&schema);
-
-        for (int32_t i = 0; i < schema.n_children; ++i) {
-            if (!schema.children[i] || !schema.children[i]->name) continue;
-            std::string colName = schema.children[i]->name;
-            if (colName == "from") fromColumnIdx = i;
-            else if (colName == "to") toColumnIdx = i;
-        }
-        if (schema.release) schema.release(&schema);
-
-        if (fromColumnIdx < 0 || toColumnIdx < 0) {
-            throw common::RuntimeException(
-                "Lance rel table dataset '" + datasetPath +
-                "' must contain 'from' and 'to' columns. "
-                "Found fromColumnIdx=" + std::to_string(fromColumnIdx) +
-                " toColumnIdx=" + std::to_string(toColumnIdx));
-        }
-    } catch (const lance::Error& e) {
-        throw common::RuntimeException(
-            std::string("Failed to open lance rel dataset '") + datasetPath + "': " + e.what());
-    }
+std::unique_ptr<RelTableScanState> LanceRelTable::createScanState(common::ValueVector* nodeIDVector,
+    const std::vector<common::ValueVector*>& outVectors, MemoryManager* memoryManager) const {
+    return std::make_unique<LanceRelTableScanState>(*memoryManager, nodeIDVector, outVectors,
+        outVectors.empty() ? nodeIDVector->state : outVectors[0]->state);
 }
 
 void LanceRelTable::initScanState(Transaction* transaction, TableScanState& scanState,
     bool resetCachedBoundNodeSelVec) const {
+    ensureDatasetLoaded();
     auto& relScanState = scanState.cast<RelTableScanState>();
-    relScanState.source = TableScanSource::COMMITTED;
-    relScanState.nodeGroup = nullptr;
-    relScanState.nodeGroupIdx = INVALID_NODE_GROUP_IDX;
+    auto& lanceScanState = static_cast<LanceRelTableScanState&>(relScanState);
+    lanceScanState.source = TableScanSource::COMMITTED;
+    lanceScanState.nodeGroup = nullptr;
+    lanceScanState.nodeGroupIdx = INVALID_NODE_GROUP_IDX;
 
     if (resetCachedBoundNodeSelVec) {
-        if (relScanState.nodeIDVector->state->getSelVector().isUnfiltered()) {
-            relScanState.cachedBoundNodeSelVector.setToUnfiltered();
+        if (lanceScanState.nodeIDVector->state->getSelVector().isUnfiltered()) {
+            lanceScanState.cachedBoundNodeSelVector.setToUnfiltered();
         } else {
-            relScanState.cachedBoundNodeSelVector.setToFiltered();
-            std::memcpy(relScanState.cachedBoundNodeSelVector.getMutableBuffer().data(),
-                relScanState.nodeIDVector->state->getSelVector().getMutableBuffer().data(),
-                relScanState.nodeIDVector->state->getSelVector().getSelSize() * sizeof(sel_t));
+            lanceScanState.cachedBoundNodeSelVector.setToFiltered();
+            std::memcpy(lanceScanState.cachedBoundNodeSelVector.getMutableBuffer().data(),
+                lanceScanState.nodeIDVector->state->getSelVector().getMutableBuffer().data(),
+                lanceScanState.nodeIDVector->state->getSelVector().getSelSize() * sizeof(sel_t));
         }
-        relScanState.cachedBoundNodeSelVector.setSelSize(
-            relScanState.nodeIDVector->state->getSelVector().getSelSize());
+        lanceScanState.cachedBoundNodeSelVector.setSelSize(
+            lanceScanState.nodeIDVector->state->getSelVector().getSelSize());
     }
 
-    auto& lanceScanState = static_cast<LanceRelTableScanState&>(relScanState);
-
-    // Build bound node offsets map
-    std::unordered_map<common::offset_t, common::sel_t> boundNodeOffsets;
-    for (size_t i = 0; i < lanceScanState.cachedBoundNodeSelVector.getSelSize(); ++i) {
-        const sel_t idx = lanceScanState.cachedBoundNodeSelVector[i];
-        const auto nodeID = lanceScanState.nodeIDVector->getValue<nodeID_t>(idx);
-        boundNodeOffsets.insert({nodeID.offset, idx});
+    // Build the offset → sel-position map (same pattern as ArrowRelTable::initScanState).
+    lanceScanState.arrowBoundNodeOffsetToSelPos.clear();
+    for (uint64_t i = 0; i < lanceScanState.cachedBoundNodeSelVector.getSelSize(); ++i) {
+        const auto boundNodeIdx = lanceScanState.cachedBoundNodeSelVector[i];
+        const auto boundNodeID = lanceScanState.nodeIDVector->getValue<nodeID_t>(boundNodeIdx);
+        lanceScanState.arrowBoundNodeOffsetToSelPos.emplace(boundNodeID.offset, boundNodeIdx);
     }
-    lanceScanState.reset(std::move(boundNodeOffsets));
 
-    // Open a new lance stream for this scan
-    try {
-        auto dataset = lance::Dataset::open(datasetPath);
-        auto scanner = dataset.scan();
-        scanner.batch_size(4096);
-        scanner.to_arrow_stream(&lanceScanState.stream);
-        lanceScanState.streamInitialized = true;
-        lanceScanState.streamExhausted = false;
-
-        if (!lanceScanState.schemaFetched && lanceScanState.stream.get_schema) {
-            if (lanceScanState.stream.get_schema(&lanceScanState.stream,
-                    &lanceScanState.streamSchema) == 0) {
-                lanceScanState.schemaFetched = true;
-            }
-        }
-    } catch (const lance::Error& e) {
-        throw common::RuntimeException(
-            std::string("Failed to open lance rel scan on '") + datasetPath + "': " + e.what());
-    }
+    lanceScanState.currentLocalRowIdx = 0;
 }
 
 bool LanceRelTable::scanInternal(Transaction* transaction, TableScanState& scanState) {
-    auto& lanceScanState = static_cast<LanceRelTableScanState&>(scanState);
+    auto& lanceScanState =
+        static_cast<LanceRelTableScanState&>(scanState.cast<RelTableScanState>());
     return scanFlat(transaction, lanceScanState);
 }
 
 // Helper: read a uint64 node offset from an ArrowArray column at a given local row index.
 // Lance stores node offsets as int64 or uint64 — both are safe to read as int64 and cast.
 static uint64_t readOffset(const ArrowArray* arr, uint64_t localIdx) {
-    if (!arr || !arr->buffers || !arr->buffers[1]) return INVALID_OFFSET;
+    if (!arr || !arr->buffers || !arr->buffers[1])
+        return INVALID_OFFSET;
     const auto* data = static_cast<const int64_t*>(arr->buffers[1]);
     return static_cast<uint64_t>(data[static_cast<size_t>(arr->offset) + localIdx]);
 }
 
 bool LanceRelTable::scanFlat(Transaction* /*transaction*/, LanceRelTableScanState& scanState) {
-    scanState.resetOutVectors();
-
-    if (scanState.boundNodeOffsets.empty() || !scanState.streamInitialized ||
-        scanState.streamExhausted) {
+    if (scanState.arrowBoundNodeOffsetToSelPos.empty() || edgeCache.empty()) {
         scanState.outState->getSelVectorUnsafe().setToFiltered(0);
         return false;
     }
 
+    scanState.resetOutVectors();
+
     const bool isFwd = scanState.direction != RelDataDirection::BWD;
-    uint64_t totalRowsCollected = 0;
-    const uint64_t maxRowsPerCall = DEFAULT_VECTOR_CAPACITY;
+    uint64_t outputCount = 0;
+    constexpr uint64_t maxRowsPerCall = DEFAULT_VECTOR_CAPACITY;
+    sel_t activeBoundSelPos = INVALID_SEL;
+    offset_t activeBoundOffset = INVALID_OFFSET;
+    bool hasActiveBound = false;
 
-    while (totalRowsCollected < maxRowsPerCall) {
-        // Load next batch if current one is exhausted
-        if (!scanState.cachedBatchData ||
-            scanState.currentLocalRowIdx >= scanState.cachedBatchData->length) {
-            // Release previous batch
-            if (scanState.cachedBatchData) {
-                scanState.currentBatchStartOffset += scanState.cachedBatchData->length;
-            }
-            scanState.currentLocalRowIdx = 0;
-            scanState.cachedBatchData = nullptr;
+    while (outputCount < maxRowsPerCall && scanState.currentLocalRowIdx < edgeCache.size()) {
+        const auto [fromOffset, toOffset] = edgeCache[scanState.currentLocalRowIdx];
+        const auto boundOffset = isFwd ? fromOffset : toOffset;
 
-            // Read next batch from stream
-            auto newBatch = std::make_shared<LanceBatchData>();
-            int rc = scanState.stream.get_next(&scanState.stream, &newBatch->array);
-            if (rc != 0 || newBatch->array.release == nullptr) {
-                scanState.streamExhausted = true;
-                break;
-            }
-            newBatch->length = static_cast<uint64_t>(newBatch->array.length);
-            if (scanState.schemaFetched && scanState.streamSchema.format != nullptr) {
-                newBatch->schema = scanState.streamSchema;
-                newBatch->schema.release = nullptr; // schema owned by scanState.streamSchema
-            }
-            scanState.cachedBatchData = std::move(newBatch);
+        const auto it = scanState.arrowBoundNodeOffsetToSelPos.find(boundOffset);
+        if (it == scanState.arrowBoundNodeOffsetToSelPos.end()) {
+            ++scanState.currentLocalRowIdx;
+            continue;
         }
 
-        const auto& batch = *scanState.cachedBatchData;
-        if (batch.length == 0 || !batch.array.children || !batch.schema.children) break;
-
-        const auto numChildren = static_cast<uint64_t>(batch.array.n_children);
-        if (fromColumnIdx < 0 || toColumnIdx < 0 ||
-            static_cast<uint64_t>(fromColumnIdx) >= numChildren ||
-            static_cast<uint64_t>(toColumnIdx) >= numChildren) {
+        if (!hasActiveBound) {
+            hasActiveBound = true;
+            activeBoundOffset = boundOffset;
+            activeBoundSelPos = it->second;
+        } else if (boundOffset != activeBoundOffset) {
+            // Different parent — stop; next scan() call will continue from here.
             break;
         }
 
-        auto* fromArr = batch.array.children[fromColumnIdx];
-        auto* toArr = batch.array.children[toColumnIdx];
-        if (!fromArr || !toArr) break;
-
-        for (; scanState.currentLocalRowIdx < batch.length &&
-               totalRowsCollected < maxRowsPerCall;
-             ++scanState.currentLocalRowIdx) {
-            const auto localIdx = scanState.currentLocalRowIdx;
-
-            // Read from/to offsets from the arrow arrays
-            // These are stored as uint64 (internal node offsets)
-            const auto fromOffset = readOffset(fromArr, localIdx);
-            const auto toOffset = readOffset(toArr, localIdx);
-            const auto boundOffset = isFwd ? fromOffset : toOffset;
-
-            auto boundIt = scanState.boundNodeOffsets.find(boundOffset);
-            if (boundIt == scanState.boundNodeOffsets.end()) continue;
-
-            const auto nbrOffset = isFwd ? toOffset : fromOffset;
-            const auto nbrTableID = isFwd ? getToNodeTableID() : getFromNodeTableID();
-            const auto globalRowIdx =
-                scanState.currentBatchStartOffset + scanState.currentLocalRowIdx;
-
-            // Fill output vectors
-            if (!scanState.outputVectors.empty()) {
-                scanState.outputVectors[0]->setValue<internalID_t>(
-                    totalRowsCollected, internalID_t{nbrOffset, nbrTableID});
-            }
-
-            for (uint64_t outCol = 1; outCol < scanState.outputVectors.size(); ++outCol) {
-                if (outCol >= scanState.columnIDs.size()) continue;
-                const auto colID = scanState.columnIDs[outCol];
-                if (colID == INVALID_COLUMN_ID || colID == ROW_IDX_COLUMN_ID ||
-                    colID == NBR_ID_COLUMN_ID)
-                    continue;
-                if (colID == REL_ID_COLUMN_ID) {
-                    scanState.outputVectors[outCol]->setValue<internalID_t>(
-                        totalRowsCollected, internalID_t{globalRowIdx, getTableID()});
-                    continue;
-                }
-                // Property column: map colID → lance column index
-                // Lance columns start after 'from' and 'to' columns.
-                // Property index = colID - 2 (assuming columns are ordered after from/to)
-                // A more robust approach would use the schema names, but we use colID directly.
-                const int64_t lanceColIdx =
-                    static_cast<int64_t>(colID) + 2; // +2 to skip from, to
-                if (lanceColIdx < 0 || static_cast<uint64_t>(lanceColIdx) >= numChildren)
-                    continue;
-                auto* propArr = batch.array.children[lanceColIdx];
-                auto* propSchema = batch.schema.children[lanceColIdx];
-                if (!propArr || !propSchema) continue;
-
-                common::ArrowNullMaskTree nullMask(propSchema, propArr, propArr->offset, propArr->length);
-                common::ArrowConverter::fromArrowArray(propSchema, propArr,
-                    *scanState.outputVectors[outCol], &nullMask,
-                    static_cast<uint64_t>(propArr->offset) + localIdx, totalRowsCollected, 1);
-            }
-
-            // Assign the bound node ID for join-back
-            if (scanState.nodeIDVector) {
-                scanState.nodeIDVector->setValue<internalID_t>(
-                    totalRowsCollected,
-                    internalID_t{boundOffset,
-                        isFwd ? getFromNodeTableID() : getToNodeTableID()});
-            }
-
-            ++totalRowsCollected;
+        const auto nbrOffset = isFwd ? toOffset : fromOffset;
+        const auto nbrTableID = isFwd ? getToNodeTableID() : getFromNodeTableID();
+        if (!scanState.outputVectors.empty()) {
+            scanState.outputVectors[0]->setValue<internalID_t>(outputCount,
+                internalID_t{nbrOffset, nbrTableID});
         }
 
-        // If we read the entire batch without filling the output buffer, continue to next batch.
-        if (scanState.currentLocalRowIdx >= batch.length) continue;
-        // Otherwise, we filled the buffer; return what we have.
-        break;
+        for (uint64_t outCol = 1; outCol < scanState.outputVectors.size(); ++outCol) {
+            if (outCol >= scanState.columnIDs.size() || !scanState.outputVectors[outCol])
+                continue;
+            if (scanState.columnIDs[outCol] == REL_ID_COLUMN_ID) {
+                scanState.outputVectors[outCol]->setValue<internalID_t>(outputCount,
+                    internalID_t{scanState.currentLocalRowIdx, getTableID()});
+            }
+        }
+
+        ++outputCount;
+        ++scanState.currentLocalRowIdx;
     }
 
-    if (totalRowsCollected == 0) {
+    if (outputCount == 0) {
         scanState.outState->getSelVectorUnsafe().setToFiltered(0);
         return false;
     }
-    scanState.outState->getSelVectorUnsafe().setSelSize(totalRowsCollected);
+
+    // Point nodeIDVector to the single parent used in this batch (PACKED_EXTEND semantics).
+    scanState.setNodeIDVectorToFlat(activeBoundSelPos);
+    auto& selVec = scanState.outState->getSelVectorUnsafe();
+    selVec.setToFiltered(outputCount);
+    for (uint64_t i = 0; i < outputCount; ++i) {
+        selVec[i] = static_cast<sel_t>(i);
+    }
     return true;
 }
 
-common::row_idx_t LanceRelTable::getTotalRowCount(
-    const Transaction* /*transaction*/) const {
-    if (cachedTotalRows != INVALID_ROW_IDX) return cachedTotalRows;
-    try {
-        auto dataset = lance::Dataset::open(datasetPath);
-        cachedTotalRows = dataset.count_rows();
-    } catch (const lance::Error& e) {
-        throw common::RuntimeException(
-            std::string("Failed to count rows in lance rel dataset '") + datasetPath + "': " +
-            e.what());
-    }
+common::row_idx_t LanceRelTable::getTotalRowCount(const Transaction* /*transaction*/) const {
+    ensureDatasetLoaded();
     return cachedTotalRows;
 }
 
-common::row_idx_t LanceRelTable::getActiveBoundNodeCount(
-    const Transaction* /*transaction*/, RelDataDirection /*direction*/) const {
+common::row_idx_t LanceRelTable::getActiveBoundNodeCount(const Transaction* /*transaction*/,
+    RelDataDirection /*direction*/) const {
+    ensureDatasetLoaded();
     // Return estimate: assume each bound node has at least one relationship
     return cachedTotalRows != INVALID_ROW_IDX ? cachedTotalRows : 0;
 }
@@ -348,8 +303,7 @@ std::vector<std::pair<common::offset_t, common::row_idx_t>> LanceRelTable::getAl
 }
 
 std::vector<std::pair<common::offset_t, common::row_idx_t>> LanceRelTable::getTopKDegreeEntries(
-    const Transaction* /*transaction*/, RelDataDirection /*direction*/,
-    common::idx_t /*k*/) const {
+    const Transaction* /*transaction*/, RelDataDirection /*direction*/, common::idx_t /*k*/) const {
     return {};
 }
 

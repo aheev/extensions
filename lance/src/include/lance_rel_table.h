@@ -18,18 +18,8 @@ struct LanceBatchData;
 
 /// Per-thread scan state for LanceRelTable.
 struct LanceRelTableScanState final : storage::RelTableScanState {
-    std::shared_ptr<LanceBatchData> cachedBatchData;
-    uint64_t currentBatchStartOffset = 0;
+    /// Index into the LanceRelTable's flat edge cache for resumable morsel scans.
     uint64_t currentLocalRowIdx = 0;
-
-    std::unordered_map<common::offset_t, common::sel_t> boundNodeOffsets;
-
-    ArrowArrayStream stream;
-    bool streamExhausted = false;
-    bool streamInitialized = false;
-
-    ArrowSchema streamSchema;
-    bool schemaFetched = false;
 
     LanceRelTableScanState(storage::MemoryManager& mm, common::ValueVector* nodeIDVector,
         std::vector<common::ValueVector*> outputVectors,
@@ -41,8 +31,6 @@ struct LanceRelTableScanState final : storage::RelTableScanState {
         std::vector<common::column_id_t> columnIDs_,
         std::vector<storage::ColumnPredicateSet> columnPredicateSets_,
         common::RelDataDirection direction_) override;
-
-    void reset(std::unordered_map<common::offset_t, common::sel_t> boundNodeOffsets_);
 
     LanceRelTableScanState(const LanceRelTableScanState&) = delete;
     LanceRelTableScanState& operator=(const LanceRelTableScanState&) = delete;
@@ -56,6 +44,10 @@ public:
         storage::MemoryManager* memoryManager, main::ClientContext* context);
 
     ~LanceRelTable() override = default;
+
+    std::unique_ptr<storage::RelTableScanState> createScanState(common::ValueVector* nodeIDVector,
+        const std::vector<common::ValueVector*>& outVectors,
+        storage::MemoryManager* memoryManager) const override;
 
     void initScanState(transaction::Transaction* transaction, storage::TableScanState& scanState,
         bool resetCachedBoundNodeSelVec = true) const override;
@@ -78,12 +70,17 @@ protected:
         common::idx_t k) const override;
 
 private:
+    void ensureDatasetLoaded() const;
+
     bool scanFlat(transaction::Transaction* transaction, LanceRelTableScanState& scanState);
 
-    int32_t fromColumnIdx = -1;
-    int32_t toColumnIdx = -1;
+    mutable int32_t fromColumnIdx = -1;
+    mutable int32_t toColumnIdx = -1;
     std::string datasetPath;
     mutable uint64_t cachedTotalRows = common::INVALID_ROW_IDX;
+    mutable std::vector<std::pair<common::offset_t, common::offset_t>> edgeCache;
+    mutable bool edgeCacheLoaded = false;
+    mutable std::mutex metadataMtx;
 };
 
 } // namespace lance_extension

@@ -10,21 +10,30 @@
 #include "common/file_system/virtual_file_system.h"
 #include "common/system_config.h"
 #include "common/types/types.h"
+#include "lance/lance.hpp"
 #include "main/client_context.h"
 #include "storage/storage_manager.h"
 #include "storage/table/node_table.h"
 #include "transaction/transaction.h"
 
-#include "lance/lance.hpp"
-
 namespace lbug {
 namespace lance_extension {
+
+static std::string sanitizeLanceError(std::string message) {
+    for (char& ch : message) {
+        if (ch == '\n' || ch == '\r') {
+            ch = ' ';
+        }
+    }
+    return message;
+}
 
 // ─── LanceNodeTableScanSharedState ───────────────────────────────────────────
 
 void LanceNodeTableScanSharedState::reset(ArrowArrayStream newStream) {
     std::lock_guard lock(mtx);
-    if (stream_.release) stream_.release(&stream_);
+    if (stream_.release)
+        stream_.release(&stream_);
     stream_ = newStream;
     std::memset(&newStream, 0, sizeof(newStream)); // disarm the original
 
@@ -68,10 +77,39 @@ bool LanceNodeTableScanSharedState::readNextBatch() {
     return true;
 }
 
-bool LanceNodeTableScanSharedState::getNextMorsel(
-    storage::ColumnarNodeTableScanState* scanState) {
+LanceNodeTable::~LanceNodeTable() {
+    if (schemaCached && cachedSchema_.release) {
+        cachedSchema_.release(&cachedSchema_);
+    }
+}
+
+void LanceNodeTable::ensureDatasetLoaded() const {
+    std::lock_guard lock(metadataMtx);
+    if (cachedTotalRows != common::INVALID_ROW_IDX && schemaCached) {
+        return;
+    }
+
+    try {
+        auto dataset = lance::Dataset::open(datasetPath);
+        if (cachedTotalRows == common::INVALID_ROW_IDX) {
+            cachedTotalRows = dataset.count_rows();
+        }
+        if (!schemaCached) {
+            std::memset(&cachedSchema_, 0, sizeof(cachedSchema_));
+            dataset.schema(&cachedSchema_);
+            schemaCached = true;
+            numLanceColumns = static_cast<uint32_t>(cachedSchema_.n_children);
+        }
+    } catch (const lance::Error& e) {
+        throw common::RuntimeException(std::string("Failed to open lance dataset '") + datasetPath +
+                                       "': " + sanitizeLanceError(e.what()));
+    }
+}
+
+bool LanceNodeTableScanSharedState::getNextMorsel(storage::ColumnarNodeTableScanState* scanState) {
     auto* lanceScanState = dynamic_cast<LanceNodeTableScanState*>(scanState);
-    if (!lanceScanState) return false;
+    if (!lanceScanState)
+        return false;
 
     std::lock_guard lock(mtx);
 
@@ -87,8 +125,10 @@ bool LanceNodeTableScanSharedState::getNextMorsel(
             return true;
         }
         // Need the next batch from the stream.
-        if (streamExhausted) return false;
-        if (!readNextBatch()) return false;
+        if (streamExhausted)
+            return false;
+        if (!readNextBatch())
+            return false;
         // Loop to assign a morsel from the freshly-read batch.
     }
 }
@@ -100,8 +140,6 @@ LanceNodeTable::LanceNodeTable(const storage::StorageManager* storageManager,
     main::ClientContext* context)
     : storage::ColumnarNodeTableBase{storageManager, nodeTableEntry, memoryManager,
           std::make_unique<LanceNodeTableScanSharedState>(kDefaultMorselSize)} {
-    std::memset(&cachedSchema_, 0, sizeof(cachedSchema_));
-
     // The catalog stores the lance dataset path in the 'storage' field.
     const std::string& storagePath = nodeTableEntry->getStorage();
     if (storagePath.empty()) {
@@ -109,25 +147,11 @@ LanceNodeTable::LanceNodeTable(const storage::StorageManager* storageManager,
             "Lance node table has empty storage path. "
             "Specify the dataset path via storage='path/to/dataset.lance'.");
     }
-    datasetPath =
-        common::VirtualFileSystem::resolvePath(context, storagePath);
-
-    try {
-        auto dataset = lance::Dataset::open(datasetPath);
-        cachedTotalRows = dataset.count_rows();
-
-        // Cache the schema for later column mapping
-        dataset.schema(&cachedSchema_);
-        schemaCached = true;
-        numLanceColumns = static_cast<uint32_t>(cachedSchema_.n_children);
-    } catch (const lance::Error& e) {
-        throw common::RuntimeException(
-            std::string("Failed to open lance dataset '") + datasetPath + "': " + e.what());
-    }
+    datasetPath = common::VirtualFileSystem::resolvePath(context, storagePath);
 }
 
-void LanceNodeTable::initializeScanCoordination(
-    const transaction::Transaction* transaction) {
+void LanceNodeTable::initializeScanCoordination(const transaction::Transaction* transaction) {
+    ensureDatasetLoaded();
     auto* lanceSharedState =
         static_cast<LanceNodeTableScanSharedState*>(tableScanSharedState.get());
 
@@ -167,9 +191,9 @@ bool LanceNodeTable::scanInternal(transaction::Transaction* /*transaction*/,
     storage::TableScanState& scanState) {
     auto& lanceScanState = scanState.cast<LanceNodeTableScanState>();
 
-    if (lanceScanState.scanCompleted) return false;
-    if (!lanceScanState.currentBatch ||
-        lanceScanState.morselStart >= lanceScanState.morselEnd) {
+    if (lanceScanState.scanCompleted)
+        return false;
+    if (!lanceScanState.currentBatch || lanceScanState.morselStart >= lanceScanState.morselEnd) {
         lanceScanState.scanCompleted = true;
         return false;
     }
@@ -178,8 +202,7 @@ bool LanceNodeTable::scanInternal(transaction::Transaction* /*transaction*/,
     const auto morselStart = lanceScanState.morselStart;
     const auto morselEnd = lanceScanState.morselEnd;
     const auto outputSize = static_cast<uint64_t>(morselEnd - morselStart);
-    const auto globalStartOffset =
-        lanceScanState.batchStartGlobalOffset + morselStart;
+    const auto globalStartOffset = lanceScanState.batchStartGlobalOffset + morselStart;
 
     scanState.resetOutVectors();
     scanState.outState->getSelVectorUnsafe().setSelSize(outputSize);
@@ -194,8 +217,8 @@ bool LanceNodeTable::scanInternal(transaction::Transaction* /*transaction*/,
     }
 
     const auto outputToLanceColIdx = getOutputToLanceColumnIdx(scanState.columnIDs);
-    copyLanceMorselToOutputVectors(batch, morselStart, outputSize,
-        scanState.outputVectors, outputToLanceColIdx);
+    copyLanceMorselToOutputVectors(batch, morselStart, outputSize, scanState.outputVectors,
+        outputToLanceColIdx);
 
     const auto tableID = this->getTableID();
     for (uint64_t i = 0; i < outputSize; ++i) {
@@ -208,15 +231,13 @@ bool LanceNodeTable::scanInternal(transaction::Transaction* /*transaction*/,
     return true;
 }
 
-size_t LanceNodeTable::getNumScanMorsels(
-    const transaction::Transaction* transaction) const {
+size_t LanceNodeTable::getNumScanMorsels(const transaction::Transaction* transaction) const {
     auto totalRows = getTotalRowCount(transaction);
     return (totalRows + kDefaultMorselSize - 1) / kDefaultMorselSize;
 }
 
 std::unique_ptr<storage::TableScanState> LanceNodeTable::createScanState(
-    common::ValueVector* nodeIDVector,
-    const std::vector<common::ValueVector*>& outVectors,
+    common::ValueVector* nodeIDVector, const std::vector<common::ValueVector*>& outVectors,
     storage::MemoryManager* memoryManager) const {
     return std::make_unique<LanceNodeTableScanState>(*memoryManager, nodeIDVector, outVectors,
         nodeIDVector->state);
@@ -224,18 +245,21 @@ std::unique_ptr<storage::TableScanState> LanceNodeTable::createScanState(
 
 bool LanceNodeTable::isVisible(const transaction::Transaction* /*transaction*/,
     common::offset_t offset) const {
+    ensureDatasetLoaded();
     return offset < cachedTotalRows;
 }
 
 bool LanceNodeTable::isVisibleNoLock(const transaction::Transaction* /*transaction*/,
     common::offset_t offset) const {
+    ensureDatasetLoaded();
     return offset < cachedTotalRows;
 }
 
 bool LanceNodeTable::lookupPK(const transaction::Transaction* /*transaction*/,
     common::ValueVector* keyVector, uint64_t vectorPos, common::offset_t& result) const {
-    if (keyVector->isNull(vectorPos)) return false;
-    if (!schemaCached) return false;
+    if (keyVector->isNull(vectorPos))
+        return false;
+    ensureDatasetLoaded();
 
     auto pkColumnID = getPKColumnID();
     int64_t pkLanceIdx = -1;
@@ -246,7 +270,8 @@ bool LanceNodeTable::lookupPK(const transaction::Transaction* /*transaction*/,
             break;
         }
     }
-    if (pkLanceIdx < 0 || pkLanceIdx >= cachedSchema_.n_children) return false;
+    if (pkLanceIdx < 0 || pkLanceIdx >= cachedSchema_.n_children)
+        return false;
 
     auto keyToLookup = keyVector->getAsValue(vectorPos);
     auto pkType = getColumn(pkColumnID).getDataType().copy();
@@ -268,7 +293,8 @@ bool LanceNodeTable::lookupPK(const transaction::Transaction* /*transaction*/,
         ArrowSchema schema;
         std::memset(&schema, 0, sizeof(schema));
         if (stream.get_schema && stream.get_schema(&stream, &schema) != 0) {
-            if (stream.release) stream.release(&stream);
+            if (stream.release)
+                stream.release(&stream);
             return false;
         }
 
@@ -281,30 +307,34 @@ bool LanceNodeTable::lookupPK(const transaction::Transaction* /*transaction*/,
                 schema.n_children > pkLanceIdx && schema.children[pkLanceIdx]) {
                 auto* childArr = batch.children[pkLanceIdx];
                 auto* childSchema = schema.children[pkLanceIdx];
-                common::ArrowNullMaskTree nullMask(
-                    childSchema, childArr, childArr->offset, childArr->length);
+                common::ArrowNullMaskTree nullMask(childSchema, childArr, childArr->offset,
+                    childArr->length);
                 for (uint64_t rowIdx = 0; rowIdx < batchLen; ++rowIdx) {
-                    common::ArrowConverter::fromArrowArray(
-                        childSchema, childArr, *pkVector, &nullMask,
-                        static_cast<uint64_t>(childArr->offset) + rowIdx, 0, 1);
+                    common::ArrowConverter::fromArrowArray(childSchema, childArr, *pkVector,
+                        &nullMask, static_cast<uint64_t>(childArr->offset) + rowIdx, 0, 1);
                     if (!pkVector->isNull(0) && *pkVector->getAsValue(0) == *keyToLookup) {
                         result = globalOffset + rowIdx;
-                        if (batch.release) batch.release(&batch);
-                        if (schema.release) schema.release(&schema);
-                        if (stream.release) stream.release(&stream);
+                        if (batch.release)
+                            batch.release(&batch);
+                        if (schema.release)
+                            schema.release(&schema);
+                        if (stream.release)
+                            stream.release(&stream);
                         return true;
                     }
                 }
             }
-            if (batch.release) batch.release(&batch);
+            if (batch.release)
+                batch.release(&batch);
             std::memset(&batch, 0, sizeof(batch));
             globalOffset += batchLen;
         }
-        if (schema.release) schema.release(&schema);
-        if (stream.release) stream.release(&stream);
+        if (schema.release)
+            schema.release(&schema);
+        if (stream.release)
+            stream.release(&stream);
     } catch (const lance::Error& e) {
-        throw common::RuntimeException(
-            std::string("Lance PK lookup failed: ") + e.what());
+        throw common::RuntimeException(std::string("Lance PK lookup failed: ") + e.what());
     }
     return false;
 }
@@ -318,15 +348,7 @@ common::node_group_idx_t LanceNodeTable::getNumBatches(
 
 common::row_idx_t LanceNodeTable::getTotalRowCount(
     const transaction::Transaction* /*transaction*/) const {
-    if (cachedTotalRows != common::INVALID_ROW_IDX) return cachedTotalRows;
-    try {
-        auto dataset = lance::Dataset::open(datasetPath);
-        cachedTotalRows = dataset.count_rows();
-    } catch (const lance::Error& e) {
-        throw common::RuntimeException(
-            std::string("Failed to count rows in lance dataset '") + datasetPath + "': " +
-            e.what());
-    }
+    ensureDatasetLoaded();
     return cachedTotalRows;
 }
 
@@ -335,9 +357,10 @@ std::vector<int64_t> LanceNodeTable::getOutputToLanceColumnIdx(
     std::vector<int64_t> result(columnIDs.size(), -1);
     for (size_t col = 0; col < columnIDs.size(); ++col) {
         const auto colID = columnIDs[col];
-        if (colID == common::INVALID_COLUMN_ID || colID == common::ROW_IDX_COLUMN_ID) continue;
-        for (common::idx_t propIdx = 0;
-             propIdx < nodeTableCatalogEntry->getNumProperties(); ++propIdx) {
+        if (colID == common::INVALID_COLUMN_ID || colID == common::ROW_IDX_COLUMN_ID)
+            continue;
+        for (common::idx_t propIdx = 0; propIdx < nodeTableCatalogEntry->getNumProperties();
+             ++propIdx) {
             if (nodeTableCatalogEntry->getColumnID(propIdx) == colID) {
                 result[col] = static_cast<int64_t>(propIdx);
                 break;
@@ -348,26 +371,27 @@ std::vector<int64_t> LanceNodeTable::getOutputToLanceColumnIdx(
 }
 
 void LanceNodeTable::copyLanceMorselToOutputVectors(const LanceBatchData& batch,
-    uint64_t morselStart, uint64_t numRows,
-    const std::vector<common::ValueVector*>& outputVectors,
+    uint64_t morselStart, uint64_t numRows, const std::vector<common::ValueVector*>& outputVectors,
     const std::vector<int64_t>& outputToLanceColIdx) const {
-    if (!batch.array.children || !batch.schema.children) return;
+    if (!batch.array.children || !batch.schema.children)
+        return;
     const auto numChildren = static_cast<uint64_t>(batch.array.n_children);
 
     for (uint64_t outCol = 0; outCol < outputVectors.size(); ++outCol) {
-        if (!outputVectors[outCol]) continue;
+        if (!outputVectors[outCol])
+            continue;
         const auto lanceIdx = outputToLanceColIdx[outCol];
-        if (lanceIdx < 0 || static_cast<uint64_t>(lanceIdx) >= numChildren) continue;
-        if (!batch.array.children[lanceIdx] || !batch.schema.children[lanceIdx]) continue;
+        if (lanceIdx < 0 || static_cast<uint64_t>(lanceIdx) >= numChildren)
+            continue;
+        if (!batch.array.children[lanceIdx] || !batch.schema.children[lanceIdx])
+            continue;
 
         auto* childArray = batch.array.children[lanceIdx];
         auto* childSchema = batch.schema.children[lanceIdx];
-        common::ArrowNullMaskTree nullMask(
-            childSchema, childArray, childArray->offset, childArray->length);
+        common::ArrowNullMaskTree nullMask(childSchema, childArray, childArray->offset,
+            childArray->length);
         common::ArrowConverter::fromArrowArray(childSchema, childArray, *outputVectors[outCol],
-            &nullMask,
-            static_cast<uint64_t>(childArray->offset) + morselStart,
-            0, numRows);
+            &nullMask, static_cast<uint64_t>(childArray->offset) + morselStart, 0, numRows);
     }
 }
 

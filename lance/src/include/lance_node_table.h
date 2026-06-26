@@ -25,10 +25,7 @@ struct LanceBatchData {
         std::memset(&schema, 0, sizeof(schema));
         std::memset(&array, 0, sizeof(array));
     }
-    ~LanceBatchData() {
-        if (array.release) array.release(&array);
-        // schema.release is intentionally left null (owned by shared state)
-    }
+    ~LanceBatchData() = default;
 
     LanceBatchData(const LanceBatchData&) = delete;
     LanceBatchData& operator=(const LanceBatchData&) = delete;
@@ -57,7 +54,8 @@ struct LanceNodeTableScanSharedState final : storage::ColumnarNodeTableScanShare
     }
 
     ~LanceNodeTableScanSharedState() override {
-        if (stream_.release) stream_.release(&stream_);
+        if (stream_.release)
+            stream_.release(&stream_);
     }
 
     void reset(ArrowArrayStream newStream);
@@ -87,10 +85,10 @@ private:
 class LanceNodeTable final : public storage::ColumnarNodeTableBase {
 public:
     LanceNodeTable(const storage::StorageManager* storageManager,
-        const catalog::NodeTableCatalogEntry* nodeTableEntry,
-        storage::MemoryManager* memoryManager, main::ClientContext* context);
+        const catalog::NodeTableCatalogEntry* nodeTableEntry, storage::MemoryManager* memoryManager,
+        main::ClientContext* context);
 
-    ~LanceNodeTable() override = default;
+    ~LanceNodeTable() override;
 
     void initializeScanCoordination(const transaction::Transaction* transaction) override;
 
@@ -125,6 +123,8 @@ protected:
     common::row_idx_t getTotalRowCount(const transaction::Transaction* transaction) const override;
 
 private:
+    void ensureDatasetLoaded() const;
+
     std::vector<int64_t> getOutputToLanceColumnIdx(
         const std::vector<common::column_id_t>& columnIDs) const;
 
@@ -135,9 +135,10 @@ private:
 private:
     std::string datasetPath;
     mutable uint64_t cachedTotalRows = common::INVALID_ROW_IDX;
-    uint32_t numLanceColumns = 0;
-    ArrowSchema cachedSchema_;
-    bool schemaCached = false;
+    mutable uint32_t numLanceColumns = 0;
+    mutable ArrowSchema cachedSchema_;
+    mutable bool schemaCached = false;
+    mutable std::mutex metadataMtx;
 
     static constexpr size_t kDefaultMorselSize = 2048;
 };
